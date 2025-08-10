@@ -4,8 +4,11 @@ import uuid
 import json
 import re
 import time
+import asyncio
 import mysql.connector
-from typing import List, Dict, TypedDict
+import uvicorn
+from typing import List, Dict, TypedDict, AsyncGenerator
+from fastapi import FastAPI, WebSocket
 from dotenv import load_dotenv
 from openai import OpenAI, APIStatusError, RateLimitError
 from pydantic.v1 import BaseModel, Field, ValidationError
@@ -22,13 +25,15 @@ mysql_password = ""
 mysql_database = os.getenv("MYSQL_DATABASE")
 
 if not all([base_url, api_key, mysql_host, mysql_user, mysql_database]):
-    # print([liara_base_url, liara_api_key, mysql_host, mysql_user, mysql_password, mysql_database])
     raise ValueError("All database and API variables must be set in the .env file.")
 
 client = OpenAI(
     base_url=base_url,
     api_key=api_key,
 )
+
+# --- FastAPI App Initialization ---
+app = FastAPI()
 
 # --- Database Integration ---
 def get_db_connection():
@@ -89,12 +94,74 @@ def save_conversation(thread_id, user_id, history):
                     (thread_id, user_id, history_json)
                 )
             connection.commit()
-            print(f"Conversation {thread_id} saved successfully.")
         except mysql.connector.Error as err:
             print(f"Error saving conversation: {err}")
         finally:
             cursor.close()
             connection.close()
+
+def get_conversations_by_user_id(user_id: str) -> List[Dict]:
+    """Retrieves a list of conversation summaries for a given user_id."""
+    connection = get_db_connection()
+    conversations = []
+    if connection:
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT thread_id, JSON_UNQUOTE(JSON_EXTRACT(history, '$.user_prompt')) FROM conversations WHERE user_id = %s ORDER BY last_updated DESC", (user_id,))
+            results = cursor.fetchall()
+            for thread_id, user_prompt in results:
+                conversations.append({
+                    "thread_id": thread_id,
+                    "user_prompt": user_prompt
+                })
+        except mysql.connector.Error as err:
+            print(f"Error fetching conversations: {err}")
+        finally:
+            cursor.close()
+            connection.close()
+    return conversations
+
+def get_conversation_by_thread_id(thread_id: str) -> Dict:
+    """Retrieves the full conversation history for a given thread_id."""
+    connection = get_db_connection()
+    if connection:
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT history FROM conversations WHERE thread_id = %s", (thread_id,))
+            result = cursor.fetchone()
+            if result:
+                return json.loads(result[0])
+            return {}
+        except mysql.connector.Error as err:
+            print(f"Error fetching conversation: {err}")
+            return {}
+        finally:
+            cursor.close()
+            connection.close()
+    return {}
+
+
+# --- FastAPI Endpoints for Chat History ---
+@app.get("/history/{user_id}")
+async def list_history(user_id: str):
+    """
+    API endpoint to list all chat conversations for a given user ID.
+    Returns a list of thread_id and the initial user prompt.
+    """
+    conversations = get_conversations_by_user_id(user_id)
+    return {"user_id": user_id, "conversations": conversations}
+
+@app.get("/conversation/{thread_id}")
+async def get_conversation(thread_id: str):
+    """
+    API endpoint to fetch the full content of a specific conversation thread.
+    Returns the complete history object.
+    """
+    conversation = get_conversation_by_thread_id(thread_id)
+    if not conversation:
+        return {"error": "Conversation not found"}, 404
+    return conversation
+
 
 # --- State Definition ---
 class GraphState(TypedDict):
@@ -120,16 +187,14 @@ class ArchitectAgentOutput(BaseModel):
 
 # --- Agent Functions (now simple Python functions) ---
 
-def call_architect_agent(state: GraphState) -> GraphState:
+async def call_architect_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """
-    The initial reasoning agent that plans the entire workflow.
+    The initial reasoning agent that plans the entire workflow, now an async generator.
     """
-    print("--- 🏛️ Architect-Agent: Initializing reasoning and task delegation ---")
+    yield {"event": "agent_start", "agent": "Architect Agent", "status": "Starting reasoning and task delegation..."}
+    
     messages = [
-        {"role": "system", "content": """You are Eleanor, a highly skilled, Thoughtful, analytical and empathetic problem solver. Your task is to take a user prompt and perform a deep web search using your built-in search tool to gather all relevant information. 
-        After searching, write your own detailed thoughts based on the search results and your opinion on how to solve this problem "step by step". 
-        then break down the problem into three distinct tasks for three specialized agents. you should define these tasks so each agent can gather information and provide its own solutions "step by step". 
-        Your final output must be a single, raw JSON object. Do not add any other text before or after the JSON. The JSON object must have two keys: "thought" and "tasks". The "tasks" key must contain a list of three dictionaries, each with "agent_name" and "task" keys.
+        {"role": "system", "content": """You are Eleanor, a highly skilled, Thoughtful, analytical and empathetic problem solver. Your task is to take a user prompt and perform a deep web search using your built-in search tool to gather all relevant information. After searching, write your own detailed thoughts based on the search results and your opinion on how to solve this problem "step by step". then break down the problem into three distinct tasks for three specialized agents. you should define these tasks so each agent can gather information and provide its own solutions "step by step". Your final output must be a single, raw JSON object. Do not add any other text before or after the JSON. The JSON object must have two keys: "thought" and "tasks". The "tasks" key must contain a list of three dictionaries, each with "agent_name" and "task" keys.
         The three tasks should be as follows:
         1. A task for a highly factual agent (Temperature 0) called Isaac.
         2. A task for a creative-factual mix agent (Temperature 0.7) called Layla.
@@ -137,32 +202,52 @@ def call_architect_agent(state: GraphState) -> GraphState:
         """},
         {"role": "user", "content": state["user_prompt"]}
     ]
-    completion = client.chat.completions.create(
-        model="openai/gpt-5-nano",
-        messages=messages,
-        # tools=[{"type": "browser_search"}],
-        temperature=0.1,
-        # max_tokens=8192
-    )
-    raw_response = completion.choices[0].message.content
-    print(f"Raw model response: {raw_response}")
-    response_data = json.loads(raw_response)
-    state["initial_thoughts"] = response_data["thought"]
-    state["tasks"] = [
-        {"agent_name": "Isaac", "task": response_data["tasks"][0]["task"]},
-        {"agent_name": "Layla", "task": response_data["tasks"][1]["task"]},
-        {"agent_name": "Nova", "task": response_data["tasks"][2]["task"]},
-    ]
-    print(f"--- 🏛️ Architect-Agent: Tasks created. Thoughts: {response_data['thought']}")
     
-    return state
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-5-nano",
+            messages=messages,
+            # tools=[{"type": "browser_search"}],
+            temperature=0.1,
+            max_tokens=8192
+        )
+        raw_response = completion.choices[0].message.content
+        yield {"event": "model_output_raw", "agent": "Architect Agent", "content": raw_response}
+
+        json_match = re.search(r'\{[\s\S]*\}', raw_response)
+        
+        if json_match:
+            json_string = json_match.group(0)
+            response_data = json.loads(json_string)
+            # FIX: Use parse_obj for Pydantic v1
+            response_obj = ArchitectAgentOutput.parse_obj(response_data)
+            
+            state["initial_thoughts"] = response_obj.thought
+            state["tasks"] = [
+                {"agent_name": "Isaac", "task": response_obj.tasks[0]["task"]},
+                {"agent_name": "Layla", "task": response_obj.tasks[1]["task"]},
+                {"agent_name": "Nova", "task": response_obj.tasks[2]["task"]},
+            ]
+            yield {"event": "thoughts_and_tasks", "content": response_obj.thought, "tasks": state["tasks"]}
+        else:
+            yield {"event": "error", "agent": "Architect Agent", "message": "Could not find valid JSON block in model response."}
+            state["initial_thoughts"] = "Error in agent's output format or empty response."
+            state["tasks"] = []
+
+    except Exception as e:
+        yield {"event": "error", "agent": "Architect Agent", "message": f"An unexpected error occurred: {e}"}
+        state["initial_thoughts"] = f"An unexpected error occurred: {e}"
+        state["tasks"] = []
+    
+    yield {"event": "agent_end", "agent": "Architect Agent", "status": "Task delegation complete."}
+    return
 
 
-def call_task_agents(state: GraphState) -> GraphState:
+async def call_task_agents(state: GraphState) -> AsyncGenerator[Dict, None]:
     """
     Runs the three task-specific agents in sequence.
     """
-    print("--- 🚀 Running Task-Specific Agents ---")
+    yield {"event": "agent_start", "agent": "Task Agents", "status": "Running task-specific agents..."}
     agent_outputs = {}
     
     tasks = state["tasks"]
@@ -270,17 +355,18 @@ def call_task_agents(state: GraphState) -> GraphState:
             )
             response_text = completion.choices[0].message.content
             agent_outputs[agent_name] = response_text
-            print(f"--- ✅ {agent_name} completed task. ---")
+            yield {"event": "agent_output", "agent_name": agent_name, "content": response_text}
         except Exception as e:
-            print(f"Error running agent {agent_name}: {e}")
+            yield {"event": "error", "agent_name": agent_name, "message": f"Error running agent: {e}"}
             agent_outputs[agent_name] = "Error in execution."
     
     state["agent_outputs"] = agent_outputs
-    return state
+    yield {"event": "agent_end", "agent": "Task Agents", "status": "All task agents have completed."}
+    return
 
-def call_simplifier_agent(state: GraphState) -> GraphState:
+async def call_simplifier_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """Simplifies the outputs from the task-specific agents that need revision."""
-    print("--- 📝 Simplifier-Agent: Simplifying outputs ---")
+    yield {"event": "agent_start", "agent": "Simplifier Agent", "status": "Simplifying outputs..."}
     simplified_outputs_new = state.get("simplified_outputs", {}).copy()
     scores = state.get("validation_scores", {})
     
@@ -322,19 +408,20 @@ def call_simplifier_agent(state: GraphState) -> GraphState:
                 )
                 simplified_text = completion.choices[0].message.content
                 simplified_outputs_new[agent_name] = simplified_text
-                print(f"--- 📝 Simplifier-Agent simplified output for {agent_name}. ---")
+                yield {"event": "simplification_complete", "agent_name": agent_name, "content": simplified_text}
             except Exception as e:
-                print(f"Error simplifying output for {agent_name}: {e}")
+                yield {"event": "error", "agent_name": agent_name, "message": f"Error simplifying output: {e}"}
                 simplified_outputs_new[agent_name] = "Error simplifying text."
     
     state["simplified_outputs"] = simplified_outputs_new
-    return state
+    yield {"event": "agent_end", "agent": "Simplifier Agent", "status": "Simplification pass complete."}
+    return
 
 
 
-def call_validator_agent(state: GraphState) -> GraphState:
+async def call_validator_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """Validates the simplified outputs with a score."""
-    print("--- 💯 Validator-Agent: Rating simplified outputs ---")
+    yield {"event": "agent_start", "agent": "Validator Agent", "status": "Rating simplified outputs..."}
     scores = {}
     
     for agent_name, simplified_text in state["simplified_outputs"].items():
@@ -366,23 +453,23 @@ def call_validator_agent(state: GraphState) -> GraphState:
             score_response = completion.choices[0].message.content
             score = int("".join(filter(str.isdigit, score_response)))
             scores[agent_name] = score
-            print(f"--- 💯 Validator-Agent scored output for {agent_name} with a {score}. ---")
+            yield {"event": "validation_score", "agent_name": agent_name, "score": score}
         except (ValueError, IndexError):
-            print(f"Could not parse score for {agent_name}. Defaulting to 1.")
+            yield {"event": "error", "agent_name": agent_name, "message": "Could not parse score. Defaulting to 1."}
             scores[agent_name] = 1
         except Exception as e:
-            print(f"Error calling validator agent for {agent_name}: {e}")
+            yield {"event": "error", "agent_name": agent_name, "message": f"Error calling validator agent: {e}"}
             scores[agent_name] = 1
 
     state["validation_scores"] = scores
     state["simplification_loop_count"] = state.get("simplification_loop_count", 0) + 1
-    return state
+    yield {"event": "agent_end", "agent": "Simplifier Agent", "status": "Simplification pass complete."}
+    return
 
 
-def call_final_aggregator_agent(state: GraphState) -> GraphState:
+async def call_final_aggregator_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """Aggregates all results into a final answer."""
-    print("--- 🎓 Final-Synthesizer: Aggregating all results ---")
-    
+    yield {"event": "agent_start", "agent": "Final Synthesizer", "status": "Aggregating all results..."}
     final_prompt = f"""User Prompt: {state['user_prompt']}
 
     Architect Agent's Initial Thoughts: {state['initial_thoughts']}
@@ -428,17 +515,18 @@ def call_final_aggregator_agent(state: GraphState) -> GraphState:
         )
         final_answer = completion.choices[0].message.content
         state["final_answer"] = final_answer
-        print("--- 🎓 Final-Synthesizer: Final answer generated. ---")
+        yield {"event": "final_answer", "content": final_answer}
     except Exception as e:
-        print(f"Error generating final answer: {e}")
+        yield {"event": "error", "agent": "Final Synthesizer", "message": f"Error generating final answer: {e}"}
         state["final_answer"] = "Error generating final answer."
     
-    return state
+    yield {"event": "agent_end", "agent": "Final Synthesizer", "status": "Final answer generated."}
+    return
 
 
-def run_conversation(user_prompt: str, thread_id: str, user_id: str):
+async def run_conversation(user_prompt: str, thread_id: str, user_id: str) -> AsyncGenerator[Dict, None]:
     """
-    Runs the entire multi-agent conversation for a given prompt without LangGraph.
+    The main asynchronous generator for the entire conversation.
     """
     initial_state = GraphState(
         user_prompt=user_prompt,
@@ -451,45 +539,76 @@ def run_conversation(user_prompt: str, thread_id: str, user_id: str):
         simplification_loop_count=0,
         validation_scores={}
     )
+    current_state = initial_state
 
-    current_state = call_architect_agent(initial_state)
+    # Step 1: Architect Agent
+    async for event in call_architect_agent(current_state):
+        yield event
+        if event.get("event") == "error":
+            return
 
     if not current_state["tasks"]:
-        print("Architect agent failed to generate tasks. Aborting.")
+        yield {"event": "system_abort", "message": "Architect agent failed to generate tasks. Aborting."}
         return
 
-    current_state = call_task_agents(current_state)
+    # Step 2: Run Task Agents
+    async for event in call_task_agents(current_state):
+        yield event
+
+    # Step 3: Simplification Loop
     while True:
-        current_state = call_simplifier_agent(current_state)
-        current_state = call_validator_agent(current_state)
+        await asyncio.sleep(0.5)
+        async for event in call_simplifier_agent(current_state):
+            yield event
+        
+        async for event in call_validator_agent(current_state):
+            yield event
 
         scores = current_state.get("validation_scores", {})
         loop_count = current_state.get("simplification_loop_count", 0)
 
         if any(score < 8 for score in scores.values()) and loop_count < 3:
-            print(f"--- 🔄 Simplification Loop: Score below 8, looping back. Loop count: {loop_count} ---")
-            time.sleep(1)
+            yield {"event": "loop_retry", "message": f"Simplification loop: Score below 8, looping back. Loop count: {loop_count}"}
         else:
-            print("--- ✅ Simplification Loop: All scores are good or max loops reached. Proceeding. ---")
+            yield {"event": "loop_end", "message": "Simplification loop complete."}
             break
 
-    current_state = call_final_aggregator_agent(current_state)
+    # Step 4: Final Aggregation Agent
+    async for event in call_final_aggregator_agent(current_state):
+        yield event
     
-    print("\n--- ✅ Final Answer ---")
-    print(current_state["final_answer"])
-    
+    # Final step: save to database and send final confirmation
     save_conversation(thread_id, user_id, current_state)
+    yield {"event": "system_end", "message": "Conversation complete. History saved."}
 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        # Wait for the initial user prompt from the client
+        data = await websocket.receive_json()
+        user_prompt = data.get("prompt")
+        user_id = data.get("user_id", str(uuid.uuid4()))
+        thread_id = data.get("thread_id", str(uuid.uuid4()))
+
+        if not user_prompt:
+            await websocket.send_json({"event": "error", "message": "No prompt received."})
+            return
+
+        # Stream the conversation events back to the client
+        async for event in run_conversation(user_prompt, thread_id, user_id):
+            await websocket.send_json(event)
+
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"event": "error", "message": str(e)})
+        except:
+            pass
+    finally:
+        await websocket.close()
 
 if __name__ == "__main__":
     create_conversations_table()
-    print("Welcome to the Advanced Agentic System!")
-    user_id = str(uuid.uuid4())
-    print(f"Your User ID is: {user_id}")
-    while True:
-        prompt = input("\nEnter your prompt (or 'exit' to quit): ")
-        if prompt.lower() == 'exit':
-            break
-
-        thread_id = str(uuid.uuid4())
-        run_conversation(prompt, thread_id, user_id)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
