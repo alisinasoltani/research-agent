@@ -194,7 +194,7 @@ async def call_architect_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     yield {"event": "agent_start", "agent": "Architect Agent", "status": "Starting reasoning and task delegation..."}
     
     messages = [
-        {"role": "system", "content": """You are Eleanor, a highly skilled, Thoughtful, analytical and empathetic problem solver. Your task is to take a user prompt and perform a deep web search using your built-in search tool to gather all relevant information. After searching, write your own detailed thoughts based on the search results and your opinion on how to solve this problem "step by step". then break down the problem into three distinct tasks for three specialized agents. you should define these tasks so each agent can gather information and provide its own solutions "step by step". Your final output must be a single, raw JSON object. Do not add any other text before or after the JSON. The JSON object must have two keys: "thought" and "tasks". The "tasks" key must contain a list of three dictionaries, each with "agent_name" and "task" keys.
+        {"role": "system", "content": """You are Eleanor, a highly skilled, Thoughtful, analytical and empathetic problem solver. Your task is to take a user prompt, if it's a question that requires research and soltuions, perform a deep web search using your built-in search tool to gather all relevant information. After searching, write your own detailed thoughts based on the search results and your opinion on how to solve this problem "step by step". then break down the problem into three distinct tasks for three specialized agents. you should define these tasks so each agent can gather information and provide its own solutions "step by step". Your final output must be a single, raw JSON object. Do not add any other text before or after the JSON. The JSON object must have two keys: "thought" and "tasks". The "tasks" key must contain a list of three dictionaries, each with "agent_name" and "task" keys.
         The three tasks should be as follows:
         1. A task for a highly factual agent (Temperature 0) called Isaac.
         2. A task for a creative-factual mix agent (Temperature 0.7) called Layla.
@@ -550,6 +550,13 @@ async def run_conversation(user_prompt: str, thread_id: str, user_id: str) -> As
     if not current_state["tasks"]:
         yield {"event": "system_abort", "message": "Architect agent failed to generate tasks. Aborting."}
         return
+        
+    # for task in current_state["tasks"]:
+    #     if task == "":
+    #         yield {"event": "agent_end", "agent": "Task Agents", "status": "No Tasks from Eleanor."}
+    #         save_conversation(thread_id, user_id, current_state)
+    #         yield {"event": "system_end", "message": "Conversation complete. History saved."}
+    #         return
 
     # Step 2: Run Task Agents
     async for event in call_task_agents(current_state):
