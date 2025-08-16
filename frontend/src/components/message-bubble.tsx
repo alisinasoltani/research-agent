@@ -2,6 +2,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -69,7 +70,25 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
           ) : message.isStreaming ? (
             <MessageBubbleLoading />
           ) : (
-            <p>{message.content}</p>
+            (() => {
+              let renderedContent;
+              try {
+                const jsonContent = JSON.parse(message.content);
+                if (typeof jsonContent === 'object' && jsonContent !== null) {
+                  renderedContent = Object.entries(jsonContent).map(([key, value]) => (
+                    <div key={key} className="mb-2">
+                      <h4 className="font-bold">{key}</h4>
+                      <ReactMarkdown>{String(value)}</ReactMarkdown>
+                    </div>
+                  ));
+                } else {
+                  renderedContent = <ReactMarkdown>{message.content}</ReactMarkdown>;
+                }
+              } catch (e) {
+                renderedContent = <ReactMarkdown>{message.content}</ReactMarkdown>;
+              }
+              return renderedContent;
+            })()
           )}
         </CardContent>
       </Card>

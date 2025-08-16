@@ -159,7 +159,7 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
       setStatus("streaming");
       // If there's an initial prompt, send it to the server
       if (initialPrompt) {
-        ws.send(JSON.stringify({ prompt: initialPrompt }));
+        ws.send(JSON.stringify({ prompt: initialPrompt, user_id: "Alisina" }));
       }
     };
 
@@ -175,7 +175,7 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
             setMessages((prev) => [
               ...prev,
               {
-                id: data.agent,
+                id: `${data.agent}-${Date.now().toString()}`,
                 isUser: false,
                 content: `${data.agent} started...`,
               },
@@ -185,9 +185,9 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
             setMessages((prev) => [
               ...prev,
               {
-                id: "thoughts",
+                id: `thoughts-${Date.now().toString()}`,
                 isUser: false,
-                content: `Architect created tasks: ${data.tasks.join(", ")}`,
+                content: `Architect created tasks: ${Object.values(data.tasks).join(", ")}`,
               },
             ]);
             break;
@@ -195,20 +195,29 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
             setMessages((prev) => [
               ...prev,
               {
-                id: `task-${data.agent_name}`,
+                id: `task-${data.agent_name}-${Date.now().toString()}`,
                 isUser: false,
                 content: `Task assigned to ${data.agent_name}.`,
               },
             ]);
             break;
           case "agent_output":
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `agent_output-${data.agent_name || ''}-${Date.now().toString()}`,
+                isUser: false,
+                content: data.content,
+              },
+            ]);
+            break;
           case "loop_retry":
             setMessages((prev) => [
               ...prev,
               {
-                id: data.event,
+                id: `loop_retry-${Date.now().toString()}`,
                 isUser: false,
-                content: data.content,
+                content: data.message || data.content,
               },
             ]);
             break;
@@ -281,7 +290,7 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
     setMessages((prev) => [
       ...prev,
       { id: Date.now().toString(), isUser: true, content: prompt },
-      { id: "agent-streaming", isUser: false, content: "", isStreaming: true },
+      { id: `agent-streaming-${Date.now().toString()}`, isUser: false, content: "", isStreaming: true },
     ]);
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
