@@ -75,12 +75,28 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
               try {
                 const jsonContent = JSON.parse(message.content);
                 if (typeof jsonContent === 'object' && jsonContent !== null) {
-                  renderedContent = Object.entries(jsonContent).map(([key, value]) => (
-                    <div key={key} className="mb-2">
-                      <h4 className="font-bold">{key}</h4>
-                      <ReactMarkdown>{String(value)}</ReactMarkdown>
-                    </div>
-                  ));
+                  if (jsonContent.summary && Array.isArray(jsonContent.ideas)) {
+                    renderedContent = (
+                      <>
+                        <ReactMarkdown>{jsonContent.summary}</ReactMarkdown>
+                        <ul className="list-disc pl-5 space-y-4">
+                          {jsonContent.ideas.map((item: { idea: string; description: string }, index: number) => (
+                            <li key={index}>
+                              <strong className="block mb-1">{item.idea}</strong>
+                              <ReactMarkdown>{item.description}</ReactMarkdown>
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    );
+                  } else {
+                    renderedContent = Object.entries(jsonContent).map(([key, value]) => (
+                      <div key={key} className="mb-2">
+                        <h4 className="font-bold">{key}</h4>
+                        <ReactMarkdown>{String(value)}</ReactMarkdown>
+                      </div>
+                    ));
+                  }
                 } else {
                   renderedContent = <ReactMarkdown>{message.content}</ReactMarkdown>;
                 }
