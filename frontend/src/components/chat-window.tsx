@@ -64,7 +64,7 @@ export function ChatWindow() {
             Close
           </Button>
         </div>
-        <ScrollArea className="flex-1 text-sm p-3">
+        <ScrollArea className="flex-1 text-sm p-3 overflow-y-scroll">
           <div className="space-y-2">
             {devPanelEventsRef.current.map((event, index) => (
               <pre key={index} className="overflow-x-auto whitespace-pre-wrap rounded-md bg-gray-100 p-2 text-xs dark:bg-gray-700">

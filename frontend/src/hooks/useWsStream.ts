@@ -4,15 +4,18 @@ import { useQuery } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { apiClient } from "@/lib/apiClient";
 
-// Define the shape of our chat messages
 export interface ChatMessage {
   id: string;
   isUser: boolean;
   content: string;
   isStreaming?: boolean;
+  isWaiting?: boolean;
+  startTime?: number;
+  endTime?: number;
+  agent?: string;
+  isError?: boolean;
 }
 
-// Define the types for the incoming WebSocket events
 interface AgentStartEvent {
   event: "agent_start";
   agent: string;
@@ -52,6 +55,17 @@ interface LoopRetryEvent {
   message: string;
 }
 
+interface SimplificationCompleteEvent {
+  event: "simplification_complete";
+  agent_name: string;
+  content: string;
+}
+
+interface ValidationScoreEvent {
+  event: "validation_score";
+  agent_name: string;
+  score: number;
+}
 
 type WsEvent =
   | AgentStartEvent
@@ -61,6 +75,8 @@ type WsEvent =
   | ThoughtsAndTasksEvent
   | TaskDelegatedEvent
   | LoopRetryEvent
+  | SimplificationCompleteEvent
+  | ValidationScoreEvent
   | any;
 
 interface UseWsStreamProps {
@@ -74,20 +90,36 @@ interface Conversation {
 }
 
 /**
- * A custom hook to manage a WebSocket connection and stream chat messages.
- * This hook is now self-contained, handling both initial data fetching and streaming.
+ * Manages WebSocket connection and streams chat messages.
+ * Handles initial data fetching and streaming with typing effect.
  * @param props The props for the hook.
- * @returns An object with the list of messages, connection status, and functions to send/restart.
+ * @returns Messages, connection status, and send function.
  */
 export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
   const [status, setStatus] = useState<"idle" | "connecting" | "streaming" | "error">("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [streamQueue, setStreamQueue] = useState<string>('');
+  const [streamQueue, setStreamQueue] = useState<string>("");
   const wsRef = useRef<WebSocket | null>(null);
   const typingRef = useRef<NodeJS.Timeout | null>(null);
+  const idCounter = useRef(0);
   const { data: session } = useSession();
 
-  // Fetch initial conversation history using TanStack Query
+  const specialAgents = ["Architect Agent", "Task Agents", "Simplifier Agent", "Validator Agent", "Final Synthesizer"];
+
+  // Map server agent names to display names (adjust if server sends different names)
+  const agentNameMap: Record<string, string> = {
+    "Architect Agent": "Eleanor",
+    "Task Agents": "Layla", // Individual task agents get their own names via task_delegated
+    "Simplifier Agent": "Nova",
+    "Validator Agent": "Isaac",
+    "Final Synthesizer": "Final Synthesizer",
+  };
+
+  const generateUniqueId = (prefix: string) => {
+    idCounter.current += 1;
+    return `${prefix}-${Date.now()}-${idCounter.current}-${Math.random().toString(36).substring(2, 7)}`;
+  };
+
   const { data: conversationHistory, isLoading } = useQuery<Conversation>({
     queryKey: ["conversation", threadId],
     queryFn: () => {
@@ -99,7 +131,6 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
     enabled: !!session && !!threadId,
   });
 
-  // Use a separate effect to update messages when conversationHistory changes
   useEffect(() => {
     if (conversationHistory) {
       setMessages(conversationHistory.messages);
@@ -108,7 +139,6 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
     }
   }, [conversationHistory]);
 
-  // Typing effect for streamed content
   useEffect(() => {
     if (streamQueue.length > 0 && !typingRef.current) {
       typingRef.current = setInterval(() => {
@@ -116,7 +146,7 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
           if (prevQueue.length === 0) {
             if (typingRef.current) clearInterval(typingRef.current);
             typingRef.current = null;
-            return '';
+            return "";
           }
 
           const nextChar = prevQueue[0];
@@ -135,7 +165,7 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
 
           return newQueue;
         });
-      }, 20); // ~50 chars/sec; adjust for desired speed
+      }, 20);
     }
 
     return () => {
@@ -148,112 +178,168 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
 
   const connect = (initialPrompt?: string) => {
     setStatus("connecting");
-    // Ensure this URL is correctly configured to your agentic server's WS endpoint
     const wsUrl = `ws://${window.location.hostname}:8000/ws`;
-
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log("WebSocket connected.");
       setStatus("streaming");
-      // If there's an initial prompt, send it to the server
       if (initialPrompt) {
-        ws.send(JSON.stringify({ prompt: initialPrompt, user_id: "Alisina" }));
+        ws.send(JSON.stringify({ prompt: initialPrompt }));
       }
     };
 
     ws.onmessage = (event) => {
       try {
         const data: WsEvent = JSON.parse(event.data);
-        console.log("Received WebSocket event:", data); // Log all events
+        console.log("Received WebSocket event:", data);
         onEvent?.(data);
 
-        // Handle specific event types
         switch (data.event) {
           case "agent_start":
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `${data.agent}-${Date.now().toString()}`,
-                isUser: false,
-                content: `${data.agent} started...`,
-              },
-            ]);
+            if (
+              specialAgents.includes(data.agent) &&
+              data.agent !== "Task Agents" &&
+              data.agent !== "Architect Agent" &&
+              data.agent !== "Validator Agent"
+            ) {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: generateUniqueId(data.agent),
+                  isUser: false,
+                  agent: agentNameMap[data.agent] || data.agent,
+                  content: "",
+                  isWaiting: true,
+                  startTime: Date.now(),
+                },
+              ]);
+            }
             break;
           case "thoughts_and_tasks":
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `thoughts-${Date.now().toString()}`,
-                isUser: false,
-                content: `Architect created tasks: ${Object.values(data.tasks).join(", ")}`,
-              },
-            ]);
+            // Do not display in main chat; only log to dev panel via onEvent
             break;
           case "task_delegated":
             setMessages((prev) => [
               ...prev,
               {
-                id: `task-${data.agent_name}-${Date.now().toString()}`,
+                id: generateUniqueId(`task-${data.agent_name}`),
                 isUser: false,
-                content: `Task assigned to ${data.agent_name}.`,
+                agent: data.agent_name, // Assume server sends correct names like "Layla"
+                content: "",
+                isWaiting: true,
+                startTime: Date.now(),
               },
             ]);
             break;
           case "agent_output":
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `agent_output-${data.agent_name || ''}-${Date.now().toString()}`,
-                isUser: false,
-                content: data.content,
-              },
-            ]);
+            setMessages((prev) => {
+              return prev.map((msg) => {
+                if (msg.agent === data.agent_name && msg.isWaiting) {
+                  return {
+                    ...msg,
+                    content: data.content,
+                    isWaiting: false,
+                    endTime: Date.now(),
+                  };
+                }
+                return msg;
+              });
+            });
+            break;
+          case "simplification_complete":
+            setMessages((prev) => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last && last.isWaiting && last.agent === agentNameMap["Simplifier Agent"]) {
+                updated[updated.length - 1] = {
+                  ...last,
+                  content: data.content,
+                  isWaiting: false,
+                  endTime: Date.now(),
+                };
+                return updated;
+              } else {
+                updated.push({
+                  id: generateUniqueId("simplification"),
+                  isUser: false,
+                  agent: agentNameMap["Simplifier Agent"],
+                  content: data.content,
+                });
+                return updated;
+              }
+            });
+            break;
+          case "validation_score":
+            // Do not display in main chat; only log to dev panel via onEvent
             break;
           case "loop_retry":
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `loop_retry-${Date.now().toString()}`,
-                isUser: false,
-                content: data.message || data.content,
-              },
-            ]);
+            // Do not display in main chat; only log to dev panel via onEvent
             break;
-
           case "final_answer":
             setMessages((prev) => {
               const updatedMessages = [...prev];
               const lastMessage = updatedMessages[updatedMessages.length - 1];
-              if (lastMessage && lastMessage.isStreaming) {
+              if (lastMessage && (lastMessage.isStreaming || lastMessage.isWaiting)) {
                 updatedMessages[updatedMessages.length - 1] = {
                   ...lastMessage,
                   content: data.content,
                   isStreaming: false,
+                  isWaiting: false,
+                  endTime: lastMessage.startTime ? Date.now() : undefined,
                 };
               } else {
                 updatedMessages.push({
-                  id: Date.now().toString(),
+                  id: generateUniqueId("final"),
                   isUser: false,
+                  agent: agentNameMap["Final Synthesizer"],
                   content: data.content,
                   isStreaming: false,
                 });
               }
               return updatedMessages;
             });
-            setStreamQueue(''); // Clear queue on final answer
+            setStreamQueue("");
             break;
-
           case "system_abort":
           case "error":
             setStatus("error");
             console.error("WebSocket Error:", data.message);
-            // Optional: Update state to show a user-friendly error toast
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: generateUniqueId("error"),
+                isUser: false,
+                content: data.message,
+                isError: true,
+              },
+            ]);
             break;
-
           default:
-            // For model_output_raw or other streamed text, append to the queue for typing effect
+            // Handle streamed content (model_output_raw)
+            setMessages((prev) => {
+              let updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last && last.isWaiting) {
+                updated[updated.length - 1] = {
+                  ...last,
+                  content: "",
+                  isWaiting: false,
+                  isStreaming: true,
+                };
+              } else if (!last || last.isUser || (!last.isStreaming && !last.isWaiting)) {
+                // If no suitable last message, add a new streaming message without agent
+                updated.push({
+                  id: generateUniqueId("streaming"),
+                  isUser: false,
+                  content: "",
+                  isStreaming: true,
+                  startTime: Date.now(),
+                });
+              }
+              return updated;
+            });
             setStreamQueue((prev) => prev + (data.content || ""));
             break;
         }
@@ -274,7 +360,6 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
   };
 
   useEffect(() => {
-    // Clean up the WebSocket connection when the component unmounts
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
@@ -286,17 +371,15 @@ export function useWsStream({ threadId, onEvent }: UseWsStreamProps) {
   }, []);
 
   const sendMessage = (prompt: string) => {
-    // Add the user message and a streaming agent message to the chat immediately
+    // Add only the user message; let WS events drive assistant bubbles
     setMessages((prev) => [
       ...prev,
-      { id: Date.now().toString(), isUser: true, content: prompt },
-      { id: `agent-streaming-${Date.now().toString()}`, isUser: false, content: "", isStreaming: true },
+      { id: generateUniqueId("user"), isUser: true, content: prompt },
     ]);
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ prompt }));
     } else {
-      // If the connection is not open, connect and then send the message
       connect(prompt);
     }
   };

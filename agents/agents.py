@@ -180,7 +180,7 @@ class GraphState(TypedDict):
 
 # --- Agent Output Schema for Pydantic Validation ---
 class ArchitectAgentOutput(BaseModel):
-    """Output format for the Architect Agent."""
+    """Output format for the Eleanor."""
     thought: str = Field(description="The agent's reflective thoughts on the problem.")
     tasks: List[Dict[str, str]] = Field(description="A list of three tasks for the downstream agents.")
 
@@ -191,10 +191,15 @@ async def call_architect_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """
     The initial reasoning agent that plans the entire workflow, now an async generator.
     """
-    yield {"event": "agent_start", "agent": "Architect Agent", "status": "Starting reasoning and task delegation..."}
+    yield {"event": "agent_start", "agent": "Eleanor", "status": "Starting reasoning and task delegation..."}
     
     messages = [
-        {"role": "system", "content": """You are Eleanor, a highly skilled, Thoughtful, analytical and empathetic problem solver. Your task is to take a user prompt, if it's a question that requires research and soltuions, perform a deep web search using your built-in search tool to gather all relevant information. After searching, write your own detailed thoughts based on the search results and your opinion on how to solve this problem "step by step". then break down the problem into three distinct tasks for three specialized agents. you should define these tasks so each agent can gather information and provide its own solutions "step by step". Your final output must be a single, raw JSON object. Do not add any other text before or after the JSON. The JSON object must have two keys: "thought" and "tasks". The "tasks" key must contain a list of three dictionaries, each with "agent_name" and "task" keys.
+        {"role": "system", "content": """You are Eleanor, a highly skilled, Thoughtful, analytical and empathetic problem solver. 
+        You must speak from your behave (first person) in the output and int the tasks.
+        Your task is to take a user prompt, if it's a question that requires research and soltuions, perform a deep web search using your built-in search tool to gather all relevant information. 
+        After searching, write your own detailed thoughts based on the search results and your opinion on how to solve this problem "step by step". 
+        then break down the problem into three distinct tasks for three specialized agents. you should define these tasks so each agent can gather information and provide its own solutions "step by step". 
+        Your final output must be a single, raw JSON object. Do not add any other text before or after the JSON. The JSON object must have two keys: "thought" and "tasks". The "tasks" key must contain a list of three dictionaries, each with "agent_name" and "task" keys.
         The three tasks should be as follows:
         1. A task for a highly factual agent (Temperature 0) called Isaac.
         2. A task for a creative-factual mix agent (Temperature 0.7) called Layla.
@@ -212,7 +217,7 @@ async def call_architect_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
             max_tokens=8192
         )
         raw_response = completion.choices[0].message.content
-        yield {"event": "model_output_raw", "agent": "Architect Agent", "content": raw_response}
+        yield {"event": "model_output_raw", "agent": "Eleanor", "content": raw_response}
 
         json_match = re.search(r'\{[\s\S]*\}', raw_response)
         
@@ -230,24 +235,23 @@ async def call_architect_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
             ]
             yield {"event": "thoughts_and_tasks", "content": response_obj.thought, "tasks": state["tasks"]}
         else:
-            yield {"event": "error", "agent": "Architect Agent", "message": "Could not find valid JSON block in model response."}
+            yield {"event": "error", "agent": "Eleanor", "message": "Could not find valid JSON block in model response."}
             state["initial_thoughts"] = "Error in agent's output format or empty response."
             state["tasks"] = []
 
     except Exception as e:
-        yield {"event": "error", "agent": "Architect Agent", "message": f"An unexpected error occurred: {e}"}
+        yield {"event": "error", "agent": "Eleanor", "message": f"An unexpected error occurred: {e}"}
         state["initial_thoughts"] = f"An unexpected error occurred: {e}"
         state["tasks"] = []
     
-    yield {"event": "agent_end", "agent": "Architect Agent", "status": "Task delegation complete."}
+    yield {"event": "agent_end", "agent": "Eleanor", "status": "Task delegation complete."}
     return
-
 
 async def call_task_agents(state: GraphState) -> AsyncGenerator[Dict, None]:
     """
     Runs the three task-specific agents in sequence.
     """
-    yield {"event": "agent_start", "agent": "Task Agents", "status": "Running task-specific agents..."}
+    yield {"event": "agent_start", "agent": "Task Agents", "status": "Isaac, Layla and Nova are working on this"}
     agent_outputs = {}
     
     tasks = state["tasks"]
@@ -265,6 +269,7 @@ async def call_task_agents(state: GraphState) -> AsyncGenerator[Dict, None]:
     
     agent_system_prompts = {
         "Isaac": """You are Isaac — a meticulous, trustworthy research assistant.  
+        You must speak from your behave (first person) in the output.
         Your role: To produce an evidence-backed report for the user based ONLY on **valid, verifiable, publicly available sources from the web**. You never guess, speculate, or provide unverified information.  
         You always **cite your sources** (URLs or proper references) clearly in a Sources section.  
 
@@ -288,6 +293,7 @@ async def call_task_agents(state: GraphState) -> AsyncGenerator[Dict, None]:
         Never output anything outside of this JSON.
         """,
         "Layla": """You are Layla — a pragmatic but imaginative problem solver.  
+        You must speak from your behave (first person) in the output.
         Your role: To take the given sub-task and create **realistic, implementable ideas** that combine solid reasoning with light creativity.  
         Your goal is to propose improvements or solutions that could plausibly be adopted in the next 2–5 years.  
 
@@ -310,7 +316,8 @@ async def call_task_agents(state: GraphState) -> AsyncGenerator[Dict, None]:
         Never output anything outside of this JSON.
         """,
         "Nova": """
-        You are Nova — a visionary, daring thinker who thrives on imagining the unexpected.  
+        You are Nova — a visionary, daring thinker who thrives on imagining the unexpected.
+        You must speak from your behave (first person) in the output.
         Your role: To explore bold, unconventional, and futuristic ideas that push the boundaries of what is possible.  
         You do NOT have to be practical or limited by current technology — instead, focus on what could be possible in the next 10–50 years.
 
@@ -366,7 +373,7 @@ async def call_task_agents(state: GraphState) -> AsyncGenerator[Dict, None]:
 
 async def call_simplifier_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """Simplifies the outputs from the task-specific agents that need revision."""
-    yield {"event": "agent_start", "agent": "Simplifier Agent", "status": "Simplifying outputs..."}
+    yield {"event": "agent_start", "agent": "Simplifier Agent", "status": "Simplifying outputs"}
     simplified_outputs_new = state.get("simplified_outputs", {}).copy()
     scores = state.get("validation_scores", {})
     
@@ -417,11 +424,9 @@ async def call_simplifier_agent(state: GraphState) -> AsyncGenerator[Dict, None]
     yield {"event": "agent_end", "agent": "Simplifier Agent", "status": "Simplification pass complete."}
     return
 
-
-
 async def call_validator_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """Validates the simplified outputs with a score."""
-    yield {"event": "agent_start", "agent": "Validator Agent", "status": "Rating simplified outputs..."}
+    yield {"event": "agent_start", "agent": "Validator Agent", "status": "Rating simplified outputs"}
     scores = {}
     
     for agent_name, simplified_text in state["simplified_outputs"].items():
@@ -466,13 +471,12 @@ async def call_validator_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     yield {"event": "agent_end", "agent": "Simplifier Agent", "status": "Simplification pass complete."}
     return
 
-
 async def call_final_aggregator_agent(state: GraphState) -> AsyncGenerator[Dict, None]:
     """Aggregates all results into a final answer."""
-    yield {"event": "agent_start", "agent": "Final Synthesizer", "status": "Aggregating all results..."}
+    yield {"event": "agent_start", "agent": "Final Synthesizer", "status": "Aggregating all results"}
     final_prompt = f"""User Prompt: {state['user_prompt']}
 
-    Architect Agent's Initial Thoughts: {state['initial_thoughts']}
+    Eleanor's Initial Thoughts: {state['initial_thoughts']}
 
     Simplified Answers:
     1. Isaac 🧐: {state['simplified_outputs'].get('Isaac', '')}
@@ -485,7 +489,7 @@ async def call_final_aggregator_agent(state: GraphState) -> AsyncGenerator[Dict,
 
         You will receive:
         1. The user's original prompt.
-        2. The initial thoughts from the Architect Agent.
+        2. The initial thoughts from the Eleanor.
         3. Three simplified answers from downstream agents.
 
         Instructions:
@@ -498,7 +502,7 @@ async def call_final_aggregator_agent(state: GraphState) -> AsyncGenerator[Dict,
 
         Inputs:
         Original Prompt: {user_prompt}
-        Architect Agent's Thoughts: {architect_thoughts}
+        Eleanor's Thoughts: {architect_thoughts}
         Simplified Answer 1: {simplified_1}
         Simplified Answer 2: {simplified_2}
         Simplified Answer 3: {simplified_3}
@@ -523,7 +527,6 @@ async def call_final_aggregator_agent(state: GraphState) -> AsyncGenerator[Dict,
     yield {"event": "agent_end", "agent": "Final Synthesizer", "status": "Final answer generated."}
     return
 
-
 async def run_conversation(user_prompt: str, thread_id: str, user_id: str) -> AsyncGenerator[Dict, None]:
     """
     The main asynchronous generator for the entire conversation.
@@ -541,14 +544,14 @@ async def run_conversation(user_prompt: str, thread_id: str, user_id: str) -> As
     )
     current_state = initial_state
 
-    # Step 1: Architect Agent
+    # Step 1: Eleanor
     async for event in call_architect_agent(current_state):
         yield event
         if event.get("event") == "error":
             return
 
     if not current_state["tasks"]:
-        yield {"event": "system_abort", "message": "Architect agent failed to generate tasks. Aborting."}
+        yield {"event": "system_abort", "message": "Eleanor failed to generate tasks. Aborting."}
         return
         
     # for task in current_state["tasks"]:
@@ -596,7 +599,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # Wait for the initial user prompt from the client
         data = await websocket.receive_json()
         user_prompt = data.get("prompt")
-        user_id = data.get("user_id", str(uuid.uuid4()))
+        user_id = data.get("user_id")
         thread_id = data.get("thread_id", str(uuid.uuid4()))
 
         if not user_prompt:

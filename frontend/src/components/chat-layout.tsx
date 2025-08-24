@@ -33,9 +33,10 @@ export function ChatLayout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className={`flex-1 flex flex-col transition-all duration-300 ease-in-out ${isSidebarOpen ? "lg:ml-64" : "lg:ml-0"}`}>
+      <main className={`flex-1 flex flex-col transition-all duration-300 ease-in-out`}>
+      {/* <main className={`flex-1 flex flex-col transition-all duration-300 ease-in-out ${isSidebarOpen ? "lg:ml-64" : "lg:ml-0"}`}> */}
         {/* Main Header */}
-        <header className="flex h-16 items-center justify-between border-b bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+        <header className="flex h-16 items-center justify-between border-b fixed top-0 z-50 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
           <div className="flex items-center">
             {!isSidebarOpen && (
               <Button
