@@ -1,7 +1,7 @@
 import os
 
 # LLM Model
-DEFAULT_LLM_MODEL = "gpt-4o"
+LLM_MODEL = "gpt-4o"
 
 # Temperatures
 INTENT_CLASSIFIER_TEMP = 0.0
